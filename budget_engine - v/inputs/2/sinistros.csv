@@ -1,0 +1,6 @@
+﻿produto_atuarial;businessline;tipo_hipotese;valor;frequencia;severidade_media;periodo_inicio;periodo_fim
+1001;Personal Protection;percentual_premio_ganho;0,38;0,0;0,0;;
+1002;Personal Protection;percentual_premio_ganho;0,3299999999999999;0,0;0,0;;
+2001;Creditor Insurance;frequencia_severidade;0,0;0,0196;1500,0;;
+2002;Creditor Insurance;percentual_premio_ganho;0,43;0,0;0,0;;
+3001;P&C;percentual_premio_ganho;0,53;0,0;0,0;;

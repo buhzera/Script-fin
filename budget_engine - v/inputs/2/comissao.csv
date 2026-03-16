@@ -1,0 +1,6 @@
+﻿produto_atuarial;businessline;tipo_regra;valor;periodo_inicio;periodo_fim
+1001;Personal Protection;percentual_premio_emitido;0,13;;
+1002;Personal Protection;percentual_premio_emitido;0,09;;
+2001;Creditor Insurance;percentual_premio_emitido;0,19;;
+2002;Creditor Insurance;percentual_premio_emitido;0,11;;
+3001;P&C;percentual_premio_ganho;0,1699999999999999;;

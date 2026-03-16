@@ -1,0 +1,22 @@
+fonte;safra;data_fim_mes;data_ini_mes;produto_atuarial;businessline;safra_venda;tipo_premio;valor_premio_emitido;valor_comissao;data_inicio_vigencia;data_fim_vigencia;quantidade_certificados;categoria;montante_capital
+New Business;2026/04;30/04/2026;01/04/2026;1001;Personal Protection;2026/04;PM;9247,03;1387,05;01/04/2026;31/03/2027;71;Protection;0
+New Business;2026/05;31/05/2026;01/05/2026;1001;Personal Protection;2026/05;PM;6602,71;990,41;01/05/2026;30/04/2027;57;Protection;0
+New Business;2026/06;30/06/2026;01/06/2026;1001;Personal Protection;2026/06;PM;7295,9;1094,38;01/06/2026;31/05/2027;63;Protection;0
+New Business;2026/04;30/04/2026;01/04/2026;1002;Personal Protection;2026/04;PU;97469,27;9746,93;01/04/2026;31/03/2028;50;Protection;0
+New Business;2026/05;31/05/2026;01/05/2026;1002;Personal Protection;2026/05;PU;36521,59;3652,16;01/05/2026;30/04/2028;21;Protection;0
+New Business;2026/06;30/06/2026;01/06/2026;1002;Personal Protection;2026/06;PU;89428,22;8942,82;01/06/2026;31/05/2028;51;Protection;0
+New Business;2026/04;30/04/2026;01/04/2026;2001;Creditor Insurance;2026/04;PM;3397,46;679,49;01/04/2026;30/09/2026;61;Protection;0
+New Business;2026/05;31/05/2026;01/05/2026;2001;Creditor Insurance;2026/05;PM;773,28;154,66;01/05/2026;31/10/2026;13;Protection;0
+New Business;2026/06;30/06/2026;01/06/2026;2001;Creditor Insurance;2026/06;PM;1572,16;314,43;01/06/2026;30/11/2026;28;Protection;0
+New Business;2026/04;30/04/2026;01/04/2026;2002;Creditor Insurance;2026/04;PU;31927,66;3831,32;01/04/2026;31/03/2027;36;Protection;0
+New Business;2026/05;31/05/2026;01/05/2026;2002;Creditor Insurance;2026/05;PU;9735,02;1168,2;01/05/2026;30/04/2027;12;Protection;0
+New Business;2026/06;30/06/2026;01/06/2026;2002;Creditor Insurance;2026/06;PU;28324,29;3398,91;01/06/2026;31/05/2027;32;Protection;0
+New Business;2026/04;30/04/2026;01/04/2026;3001;P&C;2026/04;PM;1895,82;341,25;01/04/2026;31/03/2027;10;Protection;0
+New Business;2026/05;31/05/2026;01/05/2026;3001;P&C;2026/05;PM;2213,61;398,45;01/05/2026;30/04/2027;11;Protection;0
+New Business;2026/06;30/06/2026;01/06/2026;3001;P&C;2026/06;PM;7276,17;1309,71;01/06/2026;31/05/2027;36;Protection;0
+New Business;2026/04;30/04/2026;01/04/2026;4001;Savings;2026/04;;0;0;01/04/2026;;50;Savings;5000
+New Business;2026/05;31/05/2026;01/05/2026;4001;Savings;2026/05;;0;0;01/05/2026;;40;Savings;4000
+New Business;2026/06;30/06/2026;01/06/2026;4001;Savings;2026/06;;0;0;01/06/2026;;60;Savings;6000
+New Business;2026/04;30/04/2026;01/04/2026;4002;Savings;2026/04;;0;0;01/04/2026;;80;Savings;12000
+New Business;2026/05;31/05/2026;01/05/2026;4002;Savings;2026/05;;0;0;01/05/2026;;65;Savings;9750
+New Business;2026/06;30/06/2026;01/06/2026;4002;Savings;2026/06;;0;0;01/06/2026;;75;Savings;11250

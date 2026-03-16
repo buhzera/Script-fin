@@ -1,0 +1,64 @@
+{
+  "mes_base": "2026-03-01",
+  "visao": "LOCAL",
+  "usar_paa": true,
+  "taxa_desconto": 0.0,
+  "percentual_ra": 0.05,
+  "horizonte_por_produto": {
+    "default": 12,
+    "1001": 12,
+    "1002": 12,
+    "2001": 12,
+    "2002": 12,
+    "3001": 12
+  },
+  "max_meses_total": 120,
+  "pasta_fonte": "C:/projetos/budget_engine/inputs/1",
+  "fallbacks": {
+    "sin_fallback": {
+      "ativo": true,
+      "tipo": "percentual_premio_ganho",
+      "valor": 0.4,
+      "frequencia": 0.0,
+      "severidade_media": 0.0
+    },
+    "sin_fallback_savings": {
+      "ativo": true,
+      "tipo": "valor_fixo",
+      "valor": 5.0,
+      "frequencia": 0.0,
+      "severidade_media": 0.0
+    },
+    "com_fallback": {
+      "ativo": true,
+      "tipo": "percentual_premio_emitido",
+      "valor": 0.15
+    },
+    "com_fallback_savings": {
+      "ativo": true,
+      "tipo": "valor_fixo",
+      "valor": 2.0
+    },
+    "gas_gastos_fallback": {
+      "ativo": true,
+      "tipo": "percentual_premio_ganho",
+      "valor": 0.1
+    },
+    "gas_othernbi_fallback": {
+      "ativo": true,
+      "tipo": "percentual_premio_ganho",
+      "valor": 0.05
+    },
+    "gas_gastos_fallback_sav": {
+      "ativo": true,
+      "tipo": "valor_fixo",
+      "valor": 1.0
+    },
+    "gas_othernbi_fallback_sav": {
+      "ativo": true,
+      "tipo": "valor_fixo",
+      "valor": 0.5
+    },
+    "max_meses_savings": 120
+  }
+}
