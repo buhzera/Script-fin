@@ -482,8 +482,13 @@ def _get_produtos_carregados() -> set:
     return produtos
 
 
-def _painel_sem_hipotese(hip_df, label: str, fallback_ativo: bool):
-    """Mostra aviso sobre produtos sem hipótese cadastrada."""
+def _painel_sem_hipotese(hip_df, label: str, fallback_ativo: bool,
+                         colunas_template: list = None, session_key: str = None):
+    """
+    Mostra aviso sobre produtos sem hipótese cadastrada.
+    Se colunas_template e session_key forem passados, exibe botão para adicionar
+    a hipótese diretamente, pré-preenchendo produto_atuarial e businessline.
+    """
     produtos_carregados = _get_produtos_carregados()
     if not produtos_carregados:
         return
@@ -498,6 +503,25 @@ def _painel_sem_hipotese(hip_df, label: str, fallback_ativo: bool):
             f"⚠️ **{len(sem_hip)} produto(s) sem hipótese de {label}:** "
             f"`{', '.join(sem_hip)}`{sufixo}"
         )
+        # Botão por produto para adicionar hipótese
+        if colunas_template and session_key:
+            with st.expander(f"➕ Adicionar hipótese para produto(s) sem configuração", expanded=False):
+                _prod_sel_add = st.selectbox(
+                    "Produto",
+                    sem_hip,
+                    key=f"_add_hip_prod_{session_key}"
+                )
+                _bl_add = st.text_input("Business Line", key=f"_add_hip_bl_{session_key}")
+                _nova_linha = {"produto_atuarial": _prod_sel_add, "businessline": _bl_add}
+                for _col in colunas_template:
+                    if _col not in ("produto_atuarial", "businessline"):
+                        _nova_linha[_col] = st.text_input(_col, key=f"_add_hip_{session_key}_{_col}")
+                if st.button(f"✅ Adicionar à hipótese de {label}", key=f"_add_hip_btn_{session_key}"):
+                    _df_atual = hip_df if (hip_df is not None and not hip_df.empty) else pd.DataFrame(columns=list(_nova_linha.keys()))
+                    _nova_row = pd.DataFrame([_nova_linha])
+                    st.session_state[session_key] = pd.concat([_df_atual, _nova_row], ignore_index=True)
+                    st.success(f"✅ Produto {_prod_sel_add} adicionado à hipótese de {label}. Salve o CSV para persistir.")
+                    st.rerun()
     else:
         st.success(f"✅ Todos os produtos têm hipótese de {label} cadastrada.")
 
@@ -879,6 +903,7 @@ def _horizonte_dict(df: pd.DataFrame) -> dict:
 for _k, _v in [
     ("df_resultado", None),
     ("df_auditoria", None),
+    ("df_projecao", None),  # Bloco 1: pós-expansão, pós-persistência, pré-hipóteses
     ("nos_custom", []),
     ("variaveis_criadas", []),
     ("gate_step", 0),  # 0=escolha sessão  1=pasta fonte  2=app
@@ -1309,6 +1334,16 @@ with st.sidebar:
                     st.success(f"✅ {len(res.get('carregados', []))} arquivo(s)")
                     st.rerun()
 
+        # Botão Atualizar — relertura do disco sem mudar a pasta
+        if pasta_atual and st.button("🔄 Atualizar Inputs", width="stretch", key="sidebar_atualizar"):
+            with st.spinner("Atualizando..."):
+                res = _carregar_pasta_fonte(pasta_atual)
+            if "erro" in res:
+                st.error(res["erro"])
+            else:
+                st.success(f"✅ {len(res.get('carregados', []))} arquivo(s) atualizados")
+                st.rerun()
+
     # ── Comparar Exercícios ────────────────────────────
     st.markdown('<div style="font-size:0.7rem;font-weight:700;letter-spacing:0.1em;color:rgba(255,255,255,0.4);text-transform:uppercase;margin:0.8rem 0 0.4rem;">Análise</div>', unsafe_allow_html=True)
     with st.expander("📊 Comparar Exercícios"):
@@ -1529,6 +1564,16 @@ with tab0:
                     "sessao_raiz_id": _sessao_raiz_id,
                     "nome_sessao": _nome_sessao,
                 }
+                # Preserva resultado calculado no zip recém-criado
+                _df_res_save = st.session_state.get("df_resultado")
+                if _df_res_save is not None:
+                    try:
+                        salvar_resultado_na_versao(
+                            _sid, _df_res_save,
+                            st.session_state.get("df_auditoria"),
+                        )
+                    except Exception:
+                        pass
             st.success(f"✅ '{_nome_ver_save}' salva!")
             st.rerun()
 
@@ -1594,6 +1639,16 @@ with tab0:
                             "sessao_raiz_id": _sessao_raiz_id,
                             "nome_sessao": _nome_sessao,
                         }
+                        # Preserva resultado calculado no zip recém-criado
+                        _df_res_nv = st.session_state.get("df_resultado")
+                        if _df_res_nv is not None:
+                            try:
+                                salvar_resultado_na_versao(
+                                    _novo_sid, _df_res_nv,
+                                    st.session_state.get("df_auditoria"),
+                                )
+                            except Exception:
+                                pass
                     st.session_state.pop("_nova_versao_aberta", None)
                     st.success(f"✅ Nova versão '{_nome_nova_ver}' criada!")
                     st.rerun()
@@ -1860,6 +1915,38 @@ with tabDQ:
             except Exception:
                 pass
 
+        # ── Validação de duplicatas em Stock e NB ──────────
+        _CHAVES_DQ = ["safra", "produto_atuarial", "businessline", "safra_venda",
+                      "tipo_premio", "data_inicio_vigencia", "data_fim_vigencia"]
+        st.markdown("---")
+        st.markdown("**🔁 Validação de Duplicatas**")
+        st.caption("Registros com mesma combinação de chaves devem ser agrupados em uma única linha para evitar duplicação de valores.")
+        for _arq_dup in ["stock.csv", "new_business.csv"]:
+            _path_dup = _pasta / _arq_dup
+            if not _path_dup.exists():
+                continue
+            try:
+                _df_dup = _pd.read_csv(str(_path_dup), sep=";", decimal=",", dtype=str)
+                _df_dup.columns = [c.strip().lower().replace(" ", "_") for c in _df_dup.columns]
+                _chaves_presentes = [c for c in _CHAVES_DQ if c in _df_dup.columns]
+                if len(_chaves_presentes) < 2:
+                    continue
+                _dups = _df_dup[_df_dup.duplicated(subset=_chaves_presentes, keep=False)]
+                if _dups.empty:
+                    st.success(f"✅ **{_arq_dup}** — nenhuma combinação de chaves duplicada.")
+                else:
+                    _n_grupos = _dups.groupby(_chaves_presentes).ngroups
+                    with st.expander(f"⚠️ **{_arq_dup}** — {len(_dups)} linhas em {_n_grupos} grupo(s) duplicado(s)", expanded=True):
+                        st.warning(
+                            "Estas combinações de chaves aparecem mais de uma vez. "
+                            "Se os valores (prêmio, certificados etc.) forem diferentes, os números serão somados duplicando os totais. "
+                            "Recomendamos juntar tudo em uma única linha por combinação de chaves."
+                        )
+                        st.dataframe(_dups[_chaves_presentes + [c for c in _df_dup.columns if c not in _chaves_presentes][:4]]
+                                     .head(20), width="stretch", hide_index=True)
+            except Exception as _ex_dup:
+                st.warning(f"Não foi possível validar {_arq_dup}: {_ex_dup}")
+
 
 # ═══════════════════════════════════════════════════════
 # TAB 1 — INPUTS
@@ -2108,7 +2195,11 @@ with tab2:
                                                           format="%.4f", key="sin_fb_sav_valor")
             st.session_state["sin_fallback_savings"] = _fb_sin_s
         st.markdown("---")
-        _painel_sem_hipotese(st.session_state.get("sin_manual"), "sinistros", _fb_sin["ativo"])
+        _painel_sem_hipotese(
+            st.session_state.get("sin_manual"), "sinistros", _fb_sin["ativo"],
+            colunas_template=["produto_atuarial", "businessline", "tipo_hipotese", "valor", "frequencia", "severidade_media"],
+            session_key="sin_manual"
+        )
 
     # ── Comissão ───────────────────────────────────────
     with sub2:
@@ -2175,7 +2266,11 @@ with tab2:
                                                           format="%.4f", key="com_fb_sav_valor")
             st.session_state["com_fallback_savings"] = _fb_com_s
         st.markdown("---")
-        _painel_sem_hipotese(st.session_state.get("com_manual"), "comissão", _fb_com["ativo"])
+        _painel_sem_hipotese(
+            st.session_state.get("com_manual"), "comissão", _fb_com["ativo"],
+            colunas_template=["produto_atuarial", "businessline", "tipo_regra", "valor"],
+            session_key="com_manual"
+        )
 
     # ── Gastos & Other NBI ─────────────────────────────
     with sub3:
@@ -2267,8 +2362,16 @@ with tab2:
         _hip_gas = st.session_state.get("gas_manual")
         _hip_gastos_only  = _hip_gas[_hip_gas["tipo_gasto"] == "gastos"]  if _hip_gas is not None and "tipo_gasto" in _hip_gas.columns else None
         _hip_othernbi_only = _hip_gas[_hip_gas["tipo_gasto"] == "other_nbi"] if _hip_gas is not None and "tipo_gasto" in _hip_gas.columns else None
-        _painel_sem_hipotese(_hip_gastos_only,  "gastos",     _fb_gas["ativo"])
-        _painel_sem_hipotese(_hip_othernbi_only, "other NBI", _fb_nbi["ativo"])
+        _painel_sem_hipotese(
+            _hip_gastos_only, "gastos", _fb_gas["ativo"],
+            colunas_template=["produto_atuarial", "businessline", "tipo_gasto", "tipo_regra", "valor"],
+            session_key="gas_manual"
+        )
+        _painel_sem_hipotese(
+            _hip_othernbi_only, "other NBI", _fb_nbi["ativo"],
+            colunas_template=["produto_atuarial", "businessline", "tipo_gasto", "tipo_regra", "valor"],
+            session_key="gas_manual"
+        )
 
     # ── Persistência ───────────────────────────────────
     with sub4:
@@ -2619,14 +2722,10 @@ with tab3:
 with tab4:
     st.header("▶️ Executar Engine")
 
-    # Aviso se já existe resultado carregado
-    if st.session_state["df_resultado"] is not None:
-        st.info("✅ Resultado carregado da sessão salva. Clique em **Re-executar** para recalcular.")
-
     col_ex1, col_ex2, col_ex3 = st.columns(3)
     with col_ex1:
         incluir_stock = st.checkbox("Incluir Stock", value=True)
-        incluir_nb = st.checkbox("Incluir New Business", value=True)
+        incluir_nb    = st.checkbox("Incluir New Business", value=True)
     with col_ex2:
         _cat_opcoes = ["Protection + Savings", "Somente Protection", "Somente Savings"]
         _cat_sel = st.selectbox("Categoria", _cat_opcoes, key="exec_categoria_sel")
@@ -2637,153 +2736,297 @@ with tab4:
 
     st.markdown("---")
 
+    # ── Pipeline em 2 blocos ──────────────────────────────
+    st.markdown("##### O que recalcular?")
+    _col_blk1, _col_blk2 = st.columns(2)
+    with _col_blk1:
+        _rodar_proj = st.checkbox(
+            "🔵 Bloco 1 — Projeções",
+            value=True,
+            help="Expansão mês a mês, persistência, TAF/Carregamento Savings. "
+                 "Obrigatório se ainda não houver projeção salva."
+        )
+    with _col_blk2:
+        _rodar_hip = st.checkbox(
+            "🟠 Bloco 2 — Hipóteses",
+            value=True,
+            help="Sinistros, Comissão, Gastos, Variáveis Custom e consolidação do resultado. "
+                 "Pode ser rodado isoladamente se o Bloco 1 já estiver calculado."
+        )
+
+    _tem_proj_salva = st.session_state.get("df_projecao") is not None
+    if not _rodar_proj and not _tem_proj_salva:
+        st.warning("⚠️ Nenhuma projeção salva. Marque **Bloco 1** para gerar.")
+    elif not _rodar_proj and _tem_proj_salva:
+        st.info("🔵 Bloco 1 será pulado — usando projeção já calculada.")
+    if st.session_state["df_resultado"] is not None:
+        st.info("✅ Resultado anterior disponível. Clique em **Re-executar** para recalcular.")
+
+    st.markdown("---")
+
     _label_btn = "🔄 Re-executar" if st.session_state["df_resultado"] is not None else "🚀 Executar Cálculo"
     if st.button(_label_btn, type="primary", width="stretch"):
-        with st.spinner("Processando..."):
-            log = []
-            frames = []
-            horizonte = st.session_state.get("horizonte_por_produto", {"default": 12})
+        _progresso = st.progress(0, text="Iniciando...")
+        log = []
+
+        try:
+            from engine.nb_processor import expandir_nb_mes_a_mes, carregar_new_business
+            from engine.stock_processor import expandir_stock_mes_a_mes, carregar_stock
+
+            horizonte      = st.session_state.get("horizonte_por_produto", {"default": 12})
             _max_meses     = int(st.session_state.get("max_meses_total", 120))
             _max_meses_sav = int(st.session_state.get("max_meses_savings", 120))
+            _pasta_exec    = st.session_state.get("pasta_fonte", "")
 
-            # Savings params (TAF, aporte, carregamento) — disco tem prioridade
-            _hip_sav_df = None
-            _pasta_sav = st.session_state.get("pasta_fonte", "")
-            if _pasta_sav:
-                _sav_path = Path(_pasta_sav) / "savings_hipoteses.csv"
+            # ── Sempre recarrega hipóteses do disco antes de executar ──
+            _progresso.progress(2, text="Recarregando inputs do disco...")
+            if _pasta_exec:
+                for _arq, _tipo in [
+                    ("sinistros.csv",        "sin_manual"),
+                    ("comissao.csv",         "com_manual"),
+                    ("gastos.csv",           "gas_manual"),
+                    ("savings_hipoteses.csv","savings_hipoteses_manual_raw"),
+                ]:
+                    _p = Path(_pasta_exec) / _arq
+                    if _p.exists():
+                        try:
+                            if _tipo == "savings_hipoteses_manual_raw":
+                                st.session_state["savings_hipoteses_manual"] = carregar_hipoteses_savings(str(_p))
+                            elif _tipo == "sin_manual":
+                                st.session_state[_tipo] = pd.read_csv(_p, sep=";", decimal=",")
+                            elif _tipo == "com_manual":
+                                st.session_state[_tipo] = pd.read_csv(_p, sep=";", decimal=",")
+                            elif _tipo == "gas_manual":
+                                st.session_state[_tipo] = pd.read_csv(_p, sep=";", decimal=",")
+                        except Exception:
+                            pass
+                _pers_path = Path(_pasta_exec) / "persistencia.xlsx"
+                if _pers_path.exists():
+                    try:
+                        st.session_state["curvas_persistencia"] = carregar_persistencia_excel(str(_pers_path))
+                    except Exception:
+                        pass
+
+            # Savings params
+            _hip_sav_df = st.session_state.get("savings_hipoteses_manual")
+            if _hip_sav_df is None and _pasta_exec:
+                _sav_path = Path(_pasta_exec) / "savings_hipoteses.csv"
                 if _sav_path.exists():
                     _hip_sav_df = carregar_hipoteses_savings(str(_sav_path))
                     st.session_state["savings_hipoteses_manual"] = _hip_sav_df
-            if _hip_sav_df is None:
-                _hip_sav_df = st.session_state.get("savings_hipoteses_manual")
             _sav_params = savings_params_dict(_hip_sav_df) if _hip_sav_df is not None and not _hip_sav_df.empty else {}
 
-            try:
-                from engine.nb_processor import expandir_nb_mes_a_mes
-                from engine.stock_processor import expandir_stock_mes_a_mes
+            def _filtrar_categoria(df_in):
+                if "categoria" not in df_in.columns:
+                    return df_in if incluir_protection else pd.DataFrame()
+                mask_prot = df_in["categoria"] != "Savings"
+                mask_sav  = df_in["categoria"] == "Savings"
+                parts = []
+                if incluir_protection:
+                    parts.append(df_in[mask_prot])
+                if incluir_savings:
+                    parts.append(df_in[mask_sav])
+                return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
 
-                def _filtrar_categoria(df_in):
-                    if "categoria" not in df_in.columns:
-                        return df_in if incluir_protection else pd.DataFrame()
-                    mask_prot = df_in["categoria"] != "Savings"
-                    mask_sav  = df_in["categoria"] == "Savings"
-                    parts = []
-                    if incluir_protection:
-                        parts.append(df_in[mask_prot])
-                    if incluir_savings:
-                        parts.append(df_in[mask_sav])
-                    return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+            def _ler_csv_input(nome_arquivo, bytes_key):
+                """Lê do disco (sempre mais recente) ou cai no cache de bytes."""
+                if _pasta_exec and (Path(_pasta_exec) / nome_arquivo).exists():
+                    return pd.read_csv(Path(_pasta_exec) / nome_arquivo, sep=";", decimal=",")
+                if bytes_key in st.session_state:
+                    return pd.read_csv(BytesIO(st.session_state[bytes_key]), sep=";", decimal=",")
+                return None
 
-                _pasta_exec = st.session_state.get("pasta_fonte", "")
-
-                def _ler_csv_input(nome_arquivo, bytes_key):
-                    """Lê do disco (sempre atualizado) ou cai no cache de bytes."""
-                    if _pasta_exec and (Path(_pasta_exec) / nome_arquivo).exists():
-                        return pd.read_csv(Path(_pasta_exec) / nome_arquivo,
-                                           sep=";", decimal=",")
-                    if bytes_key in st.session_state:
-                        return pd.read_csv(BytesIO(st.session_state[bytes_key]),
-                                           sep=";", decimal=",")
+            def _preparar_df(df):
+                if df is None:
                     return None
+                df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
+                for col in ["data_fim_mes", "data_ini_mes", "data_inicio_vigencia", "data_fim_vigencia"]:
+                    if col in df.columns:
+                        df[col] = pd.to_datetime(df[col], dayfirst=True, errors="coerce")
+                # tipo_premio NaN em Savings → "savings"
+                if "categoria" in df.columns and "tipo_premio" in df.columns:
+                    df["tipo_premio"] = df["tipo_premio"].astype(str).str.strip()
+                    _mask_sav_nan = (df["categoria"] == "Savings") & df["tipo_premio"].isin(["nan","NaN","","None"])
+                    df.loc[_mask_sav_nan, "tipo_premio"] = "savings"
+                return df
 
-                def _preparar_df(df):
-                    if df is None:
-                        return None
-                    df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
-                    for col in ["data_fim_mes", "data_ini_mes", "data_inicio_vigencia",
-                                "data_fim_vigencia"]:
-                        if col in df.columns:
-                            df[col] = pd.to_datetime(df[col], dayfirst=True, errors="coerce")
-                    return df
+            # ════════════════════════════════════════════════
+            # BLOCO 1 — Projeções
+            # ════════════════════════════════════════════════
+            if _rodar_proj:
+                _progresso.progress(5, text="Bloco 1 — Expansão Stock...")
+                frames = []
 
-                # 1. Stock — expande com renovação por produto
+                # 1. Stock
                 if incluir_stock:
-                    df_stock = _preparar_df(_ler_csv_input("stock.csv", "stock_bytes_loaded"))
-                    if df_stock is not None:
-                        df_stock = _filtrar_categoria(df_stock)
-                    if df_stock is not None and not df_stock.empty:
-                        df_stock = expandir_stock_mes_a_mes(
-                            df_stock, horizonte, mes_base,
+                    _df_stock_raw = _preparar_df(_ler_csv_input("stock.csv", "stock_bytes_loaded"))
+                    if _df_stock_raw is not None:
+                        # Validação: tipo_premio NaN em Protection
+                        if "categoria" in _df_stock_raw.columns and "tipo_premio" in _df_stock_raw.columns:
+                            _nan_prot = (
+                                (_df_stock_raw["categoria"] != "Savings") &
+                                _df_stock_raw["tipo_premio"].isin(["nan","NaN","","None"])
+                            ).sum()
+                            if _nan_prot > 0:
+                                st.warning(f"⚠️ Stock: {_nan_prot} linha(s) de Protection com tipo_premio nulo — serão tratadas como PM.")
+                        _df_stock_raw = _filtrar_categoria(_df_stock_raw)
+                    if _df_stock_raw is not None and not _df_stock_raw.empty:
+                        df_stock_exp = expandir_stock_mes_a_mes(
+                            _df_stock_raw, horizonte, mes_base,
                             max_meses_total=_max_meses,
                             savings_params=_sav_params,
                             max_meses_savings=_max_meses_sav,
                         )
-                        frames.append(df_stock)
-                        log.append(f"✅ Stock: {len(df_stock)} registros expandidos")
+                        frames.append(df_stock_exp)
+                        log.append(f"✅ Stock: {len(df_stock_exp):,} registros expandidos")
+                    else:
+                        log.append("⚠️ Stock: nenhum dado encontrado — ignorado")
 
-                # 2. New Business — expande com renovação por produto
+                _progresso.progress(25, text="Bloco 1 — Expansão New Business...")
+
+                # 2. New Business
                 if incluir_nb:
-                    df_nb = _preparar_df(_ler_csv_input("new_business.csv", "nb_bytes_loaded"))
-                    if df_nb is not None:
-                        df_nb = _filtrar_categoria(df_nb)
-                    if df_nb is not None and not df_nb.empty:
-                        df_nb = expandir_nb_mes_a_mes(
-                            df_nb, horizonte,
+                    _df_nb_raw = _preparar_df(_ler_csv_input("new_business.csv", "nb_bytes_loaded"))
+                    if _df_nb_raw is not None:
+                        if "categoria" in _df_nb_raw.columns and "tipo_premio" in _df_nb_raw.columns:
+                            _nan_prot_nb = (
+                                (_df_nb_raw["categoria"] != "Savings") &
+                                _df_nb_raw["tipo_premio"].isin(["nan","NaN","","None"])
+                            ).sum()
+                            if _nan_prot_nb > 0:
+                                st.warning(f"⚠️ NB: {_nan_prot_nb} linha(s) de Protection com tipo_premio nulo — serão tratadas como PM.")
+                        _df_nb_raw = _filtrar_categoria(_df_nb_raw)
+                    if _df_nb_raw is not None and not _df_nb_raw.empty:
+                        from engine.nb_processor import expandir_nb_mes_a_mes as _expandir_nb
+                        df_nb_exp = _expandir_nb(
+                            _df_nb_raw, horizonte,
                             max_meses_total=_max_meses,
                             savings_params=_sav_params,
                             max_meses_savings=_max_meses_sav,
                         )
-                        frames.append(df_nb)
-                        log.append(f"✅ New Business: {len(df_nb)} registros expandidos")
+                        frames.append(df_nb_exp)
+                        log.append(f"✅ New Business: {len(df_nb_exp):,} registros expandidos")
+                    else:
+                        log.append("⚠️ New Business: nenhum dado encontrado — ignorado")
 
                 if not frames:
-                    st.warning("Nenhum dado carregado. Configure a pasta de inputs ou faça upload.")
+                    st.warning("⚠️ Nenhum dado de Stock ou NB disponível. Verifique os inputs.")
+                    _progresso.progress(100, text="Concluído (sem dados)")
                     st.stop()
 
                 df_total = pd.concat(frames, ignore_index=True)
+                _progresso.progress(40, text="Bloco 1 — Aplicando Persistência...")
 
-                # 3. Sinistros (fallback separado por categoria)
+                # 3. Persistência
+                curvas_persist = st.session_state.get("curvas_persistencia", {})
+                fallback       = st.session_state.get("fallback_curva", None)
+                curvas_sav_p   = st.session_state.get("curvas_persistencia_savings", {})
+                fallback_sav   = st.session_state.get("fallback_curva_savings", None)
+
+                if "categoria" in df_total.columns:
+                    mask_prot_p = df_total["categoria"] != "Savings"
+                    mask_sav_p  = df_total["categoria"] == "Savings"
+                    partes_persist = []
+                    if incluir_protection and mask_prot_p.any():
+                        if curvas_persist or fallback:
+                            antes_p = mask_prot_p.sum()
+                            _dp = aplicar_persistencia_acumulada(
+                                df_total[mask_prot_p].copy(), curvas=curvas_persist, fallback_curva=fallback)
+                            partes_persist.append(_dp)
+                            log.append(f"✅ Persistência Protection — {antes_p - len(_dp):,} linhas canceladas")
+                        else:
+                            partes_persist.append(df_total[mask_prot_p].copy())
+                            log.append("⚠️ Persistência Protection não configurada")
+                    if incluir_savings and mask_sav_p.any():
+                        if curvas_sav_p or fallback_sav:
+                            antes_s = mask_sav_p.sum()
+                            _ds = aplicar_persistencia_acumulada(
+                                df_total[mask_sav_p].copy(), curvas=curvas_sav_p, fallback_curva=fallback_sav)
+                            partes_persist.append(_ds)
+                            log.append(f"✅ Persistência Savings — {antes_s - len(_ds):,} linhas canceladas")
+                        else:
+                            partes_persist.append(df_total[mask_sav_p].copy())
+                            log.append("⚠️ Persistência Savings não configurada")
+                    df_total = pd.concat(partes_persist, ignore_index=True) if partes_persist else df_total
+                else:
+                    if curvas_persist or fallback:
+                        antes = len(df_total)
+                        df_total = aplicar_persistencia_acumulada(
+                            df_total, curvas=curvas_persist, fallback_curva=fallback)
+                        log.append(f"✅ Persistência aplicada — {antes - len(df_total):,} canceladas")
+                    else:
+                        log.append("⚠️ Persistência não configurada")
+
+                _progresso.progress(55, text="Bloco 1 — TAF e Carregamento Savings...")
+
+                # 4. Savings — TAF e Carregamento (pós-persistência)
+                if incluir_savings and _hip_sav_df is not None and not _hip_sav_df.empty:
+                    df_total = aplicar_savings(df_total, _hip_sav_df)
+                    log.append("✅ TAF e Carregamento Savings calculados")
+
+                # Salva projeção (Bloco 1)
+                st.session_state["df_projecao"] = df_total.copy()
+                log.append(f"💾 Projeção salva ({len(df_total):,} linhas)")
+
+            else:
+                # Bloco 1 pulado — usa df_projecao existente
+                df_total = st.session_state["df_projecao"].copy()
+                log.append(f"🔵 Bloco 1 pulado — usando projeção existente ({len(df_total):,} linhas)")
+
+            # Salva snapshot para auditoria
+            st.session_state["df_auditoria"] = df_total.copy()
+
+            # ════════════════════════════════════════════════
+            # BLOCO 2 — Hipóteses
+            # ════════════════════════════════════════════════
+            if _rodar_hip:
+                _progresso.progress(60, text="Bloco 2 — Sinistros...")
+
+                # 5. Sinistros
                 hip_sin = st.session_state.get("sin_manual",
-                    pd.DataFrame(columns=["produto_atuarial", "businessline",
-                                          "tipo_hipotese", "valor",
-                                          "frequencia", "severidade_media"]))
+                    pd.DataFrame(columns=["produto_atuarial","businessline","tipo_hipotese","valor","frequencia","severidade_media"]))
                 if not isinstance(hip_sin, pd.DataFrame):
                     hip_sin = pd.DataFrame(hip_sin)
-                # Aplica Protection com seu fallback
                 if incluir_protection and "categoria" in df_total.columns:
                     mask_p = df_total["categoria"] != "Savings"
                     if mask_p.any():
-                        df_prot_sin = aplicar_sinistros(df_total[mask_p].copy(), hip_sin,
-                                                        fallback=st.session_state.get("sin_fallback"))
-                        df_total.loc[mask_p, "sinistros_calculado"] = df_prot_sin["sinistros_calculado"].values
+                        _dp = aplicar_sinistros(df_total[mask_p].copy(), hip_sin, fallback=st.session_state.get("sin_fallback"))
+                        df_total.loc[mask_p, "sinistros_calculado"] = _dp["sinistros_calculado"].values
                 if incluir_savings and "categoria" in df_total.columns:
                     mask_s = df_total["categoria"] == "Savings"
                     if mask_s.any():
-                        df_sav_sin = aplicar_sinistros(df_total[mask_s].copy(), hip_sin,
-                                                       fallback=st.session_state.get("sin_fallback_savings"))
-                        df_total.loc[mask_s, "sinistros_calculado"] = df_sav_sin["sinistros_calculado"].values
+                        _ds = aplicar_sinistros(df_total[mask_s].copy(), hip_sin, fallback=st.session_state.get("sin_fallback_savings"))
+                        df_total.loc[mask_s, "sinistros_calculado"] = _ds["sinistros_calculado"].values
                 if "sinistros_calculado" not in df_total.columns:
-                    df_total = aplicar_sinistros(df_total, hip_sin,
-                                                 fallback=st.session_state.get("sin_fallback"))
+                    df_total = aplicar_sinistros(df_total, hip_sin, fallback=st.session_state.get("sin_fallback"))
                 log.append("✅ Sinistros aplicados")
 
-                # 4. Comissão (fallback separado por categoria)
+                _progresso.progress(70, text="Bloco 2 — Comissão...")
+
+                # 6. Comissão
                 hip_com = st.session_state.get("com_manual",
-                    pd.DataFrame(columns=["produto_atuarial", "businessline",
-                                          "tipo_regra", "valor"]))
+                    pd.DataFrame(columns=["produto_atuarial","businessline","tipo_regra","valor"]))
                 if not isinstance(hip_com, pd.DataFrame):
                     hip_com = pd.DataFrame(hip_com)
                 if incluir_protection and "categoria" in df_total.columns:
                     mask_p = df_total["categoria"] != "Savings"
                     if mask_p.any():
-                        df_prot_com = aplicar_comissao(df_total[mask_p].copy(), hip_com,
-                                                       fallback=st.session_state.get("com_fallback"))
-                        df_total.loc[mask_p, "comissao_calculada"] = df_prot_com["comissao_calculada"].values
+                        _dp = aplicar_comissao(df_total[mask_p].copy(), hip_com, fallback=st.session_state.get("com_fallback"))
+                        df_total.loc[mask_p, "comissao_calculada"] = _dp["comissao_calculada"].values
                 if incluir_savings and "categoria" in df_total.columns:
                     mask_s = df_total["categoria"] == "Savings"
                     if mask_s.any():
-                        df_sav_com = aplicar_comissao(df_total[mask_s].copy(), hip_com,
-                                                      fallback=st.session_state.get("com_fallback_savings"))
-                        df_total.loc[mask_s, "comissao_calculada"] = df_sav_com["comissao_calculada"].values
+                        _ds = aplicar_comissao(df_total[mask_s].copy(), hip_com, fallback=st.session_state.get("com_fallback_savings"))
+                        df_total.loc[mask_s, "comissao_calculada"] = _ds["comissao_calculada"].values
                 if "comissao_calculada" not in df_total.columns:
-                    df_total = aplicar_comissao(df_total, hip_com,
-                                                fallback=st.session_state.get("com_fallback"))
+                    df_total = aplicar_comissao(df_total, hip_com, fallback=st.session_state.get("com_fallback"))
                 log.append("✅ Comissão aplicada")
 
-                # 5. Gastos (fallback separado por categoria)
+                _progresso.progress(80, text="Bloco 2 — Gastos e Other NBI...")
+
+                # 7. Gastos
                 hip_gas = st.session_state.get("gas_manual",
-                    pd.DataFrame(columns=["produto_atuarial", "businessline",
-                                          "tipo_gasto", "tipo_regra", "valor"]))
+                    pd.DataFrame(columns=["produto_atuarial","businessline","tipo_gasto","tipo_regra","valor"]))
                 if not isinstance(hip_gas, pd.DataFrame):
                     hip_gas = pd.DataFrame(hip_gas)
                 if incluir_protection and "categoria" in df_total.columns:
@@ -2809,52 +3052,9 @@ with tab4:
                     df_total = aplicar_gastos(df_total, hip_gas, "other_nbi", fallback=st.session_state.get("gas_othernbi_fallback"))
                 log.append("✅ Gastos e Other NBI aplicados")
 
-                # 6. Persistência — Protection
-                curvas_persist = st.session_state.get("curvas_persistencia", {})
-                fallback       = st.session_state.get("fallback_curva", None)
-                curvas_sav_p   = st.session_state.get("curvas_persistencia_savings", {})
-                fallback_sav   = st.session_state.get("fallback_curva_savings", None)
+                _progresso.progress(90, text="Bloco 2 — Consolidando resultado...")
 
-                if "categoria" in df_total.columns:
-                    mask_prot_p = df_total["categoria"] != "Savings"
-                    mask_sav_p  = df_total["categoria"] == "Savings"
-                    partes_persist = []
-                    if incluir_protection and mask_prot_p.any() and (curvas_persist or fallback):
-                        antes_p = mask_prot_p.sum()
-                        _dp = aplicar_persistencia_acumulada(
-                            df_total[mask_prot_p].copy(), curvas=curvas_persist, fallback_curva=fallback)
-                        partes_persist.append(_dp)
-                        log.append(f"✅ Persistência Protection — {antes_p - len(_dp)} grupos cancelados")
-                    elif incluir_protection and mask_prot_p.any():
-                        partes_persist.append(df_total[mask_prot_p].copy())
-                        log.append("⚠️ Persistência Protection não configurada")
-                    if incluir_savings and mask_sav_p.any() and (curvas_sav_p or fallback_sav):
-                        antes_s = mask_sav_p.sum()
-                        _ds = aplicar_persistencia_acumulada(
-                            df_total[mask_sav_p].copy(), curvas=curvas_sav_p, fallback_curva=fallback_sav)
-                        partes_persist.append(_ds)
-                        log.append(f"✅ Persistência Savings — {antes_s - len(_ds)} grupos cancelados")
-                    elif incluir_savings and mask_sav_p.any():
-                        partes_persist.append(df_total[mask_sav_p].copy())
-                        log.append("⚠️ Persistência Savings não configurada")
-                    df_total = pd.concat(partes_persist, ignore_index=True) if partes_persist else df_total
-                else:
-                    if curvas_persist or fallback:
-                        antes = len(df_total)
-                        df_total = aplicar_persistencia_acumulada(
-                            df_total, curvas=curvas_persist, fallback_curva=fallback)
-                        log.append(f"✅ Persistência aplicada — {antes - len(df_total)} grupos cancelados")
-                    else:
-                        log.append("⚠️ Persistência não configurada")
-
-                # 7. Savings — TAF e Carregamento (pós-persistência)
-                if incluir_savings and _hip_sav_df is not None and not _hip_sav_df.empty:
-                    df_total = aplicar_savings(df_total, _hip_sav_df)
-                    log.append("✅ TAF e Carregamento Savings calculados")
-
-                # Salva snapshot para auditoria (pós-persistência, pré-consolidação)
-                st.session_state["df_auditoria"] = df_total.copy()
-
+                # 8. Consolidação
                 visoes = ["LOCAL", "IFRS17"] if visao == "Ambas" else [visao]
                 frames_resultado = []
                 for v in visoes:
@@ -2869,15 +3069,15 @@ with tab4:
 
                 df_final = pd.concat(frames_resultado, ignore_index=True)
                 st.session_state["df_resultado"] = df_final
-                log.append(f"✅ Resultado calculado: {len(df_final)} linhas")
+                log.append(f"✅ Resultado calculado: {len(df_final):,} linhas")
 
-                # Reset filtros do Resultado para refletir 100% dos dados novos
+                # Reset filtros
                 for _fk in ["filtro_visao_res", "filtro_produto_res", "filtro_bl_res",
                              "filtro_fonte", "filtro_tipo_premio", "filtro_movimento",
                              "filtro_categoria_res"]:
                     st.session_state.pop(_fk, None)
 
-                # Auto-salva na sessão atual
+                # Auto-salva
                 _vid = (st.session_state.get("sessao_carregada") or {}).get("id")
                 if _vid:
                     try:
@@ -2891,18 +3091,22 @@ with tab4:
                     except Exception as _e:
                         log.append(f"⚠️ Não foi possível salvar o resultado na sessão: {_e}")
 
-                for msg in log:
-                    st.success(msg)
-
                 csv_bytes = df_final.to_csv(sep=";", decimal=",",
                                              index=False, encoding="utf-8-sig").encode("utf-8-sig")
-                st.download_button("⬇️ Baixar Output CSV", csv_bytes, nome_output, "text/csv",
-                                   width="stretch")
 
-            except Exception as e:
-                st.error(f"Erro durante execução: {e}")
-                import traceback
-                st.code(traceback.format_exc())
+            _progresso.progress(100, text="✅ Concluído!")
+            for msg in log:
+                st.success(msg)
+
+            if st.session_state.get("df_resultado") is not None:
+                st.download_button("⬇️ Baixar Output CSV", csv_bytes if _rodar_hip else b"",
+                                   nome_output, "text/csv", width="stretch")
+
+        except Exception as e:
+            _progresso.progress(100, text="❌ Erro")
+            st.error(f"Erro durante execução: {e}")
+            import traceback
+            st.code(traceback.format_exc())
 
 
 # ═══════════════════════════════════════════════════════
@@ -2939,6 +3143,20 @@ with tab5:
                         )
             except Exception:
                 pass
+
+        # ── Alerta de duplicidade no resultado ──
+        _CHAVES_RES = ["safra", "produto_atuarial", "businessline", "safra_venda",
+                       "tipo_premio", "data_inicio_vigencia", "data_fim_vigencia", "fonte"]
+        _chaves_res_presentes = [c for c in _CHAVES_RES if c in df_res.columns]
+        if len(_chaves_res_presentes) >= 4:
+            _dups_res = df_res[df_res.duplicated(subset=_chaves_res_presentes, keep=False)]
+            if not _dups_res.empty:
+                _n_dup_res = _dups_res.groupby(_chaves_res_presentes).ngroups
+                st.warning(
+                    f"⚠️ **Possível duplicidade detectada no resultado:** {_n_dup_res} combinação(ões) de chaves "
+                    f"aparecem mais de uma vez. Verifique o Data Quality dos inputs — "
+                    f"linhas com mesma chave deveriam ser agrupadas antes de processar."
+                )
 
         col_f1, col_f2, col_f3 = st.columns(3)
         with col_f1:
@@ -3067,12 +3285,28 @@ with tab5:
             chaves = [c for c in ["mes_projecao", "visao", "categoria"] if c in _df_res_graf.columns]
             df_mes = _df_res_graf.groupby(chaves)[cols_num].sum().reset_index()
 
-            # Adiciona qtd_vendas do NB bruto (por safra_venda) ao df_mes
-            if "nb_bytes_loaded" in st.session_state:
-                try:
-                    _df_nb_v = pd.read_csv(BytesIO(st.session_state["nb_bytes_loaded"]),
-                                           sep=";", decimal=",")
+            # Adiciona qtd_vendas do NB — filtrado pelos mesmos critérios do resultado
+            _nb_bytes = st.session_state.get("nb_bytes_loaded")
+            _pasta_nb = st.session_state.get("pasta_fonte", "")
+            _nb_path  = Path(_pasta_nb) / "new_business.csv" if _pasta_nb else None
+            _nb_src   = None
+            if _nb_path and _nb_path.exists():
+                _nb_src = str(_nb_path)
+            try:
+                if _nb_src:
+                    _df_nb_v = pd.read_csv(_nb_src, sep=";", decimal=",")
+                elif _nb_bytes:
+                    _df_nb_v = pd.read_csv(BytesIO(_nb_bytes), sep=";", decimal=",")
+                else:
+                    _df_nb_v = None
+                if _df_nb_v is not None:
                     _df_nb_v.columns = [c.strip().lower().replace(" ", "_") for c in _df_nb_v.columns]
+                    # Aplica os mesmos filtros de produto e categoria do resultado
+                    if "produto_atuarial" in _df_nb_v.columns and "prod_filtro" in dir():
+                        _df_nb_v = _df_nb_v[_df_nb_v["produto_atuarial"].astype(str).isin(
+                            [str(p) for p in prod_filtro])]
+                    if "categoria" in _df_nb_v.columns and "cat_filtro" in dir():
+                        _df_nb_v = _df_nb_v[_df_nb_v["categoria"].isin(cat_filtro)]
                     _col_sv = next((c for c in ["safra_venda", "safra"] if c in _df_nb_v.columns), None)
                     if _col_sv and "quantidade_certificados" in _df_nb_v.columns:
                         _df_nb_v = (_df_nb_v.groupby(_col_sv, dropna=False)["quantidade_certificados"]
@@ -3080,8 +3314,8 @@ with tab5:
                                     .rename(columns={_col_sv: "mes_projecao",
                                                      "quantidade_certificados": "qtd_vendas"}))
                         df_mes = df_mes.merge(_df_nb_v, on="mes_projecao", how="left")
-                except Exception:
-                    pass
+            except Exception:
+                pass
 
             st.dataframe(df_mes, width="stretch", height=400)
 

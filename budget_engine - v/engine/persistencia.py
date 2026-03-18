@@ -5,11 +5,9 @@ Aplica curvas de sobrevivência mês a mês sobre Stock e New Business.
 Lógica geral:
   - Curva: {produto: {mes_vida: pct}} ex: {0: 1.0, 1: 0.97, ..., 16: 0.0}
   - Mês de vida = datediff(data_inicio_vigencia, data_fim_mes_projetado) em meses completos
-  - Fator mensal = persistencia[mes+1] / persistencia[mes]
-  - Base do cálculo: quantidade_certificados × ticket_médio de cada indicador
-  - PM cancela: libera tudo (prêmio emitido, comissão, sinistros, gastos)
-  - PU cancela: libera APENAS a PPNG restante (meses futuros), não o prêmio já ganho
-  - Prêmio ganho no mês do cancelamento: proporcional aos dias decorridos até o cancelamento
+  - NB    : fator_abs = P(mes_vida) / P(0)           — começa de 100%, decai
+  - Stock : fator_abs = P(mes_vida) / P(mes_vida_base) — posição já é "net", aplica só o delta
+  - mes_vida_base para Stock é armazenado como coluna pelo stock_processor durante a expansão
 """
 import pandas as pd
 import numpy as np
@@ -30,18 +28,15 @@ def carregar_persistencia_excel(filepath: str) -> dict:
     Exemplo: {1001: {0: 1.0, 1: 0.97, 2: 0.95, ..., 24: 0.0}}
     """
     try:
-        # Tenta ler como tabela flat (formato preferido)
         df = pd.read_excel(filepath, sheet_name=0)
         df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
 
         if "produto_atuarial" in df.columns and "mes_vida" in df.columns and "persistencia" in df.columns:
             return _df_para_dict(df)
 
-        # Tenta formato wide: produto_atuarial | 0 | 1 | 2 | ... | 120
         elif "produto_atuarial" in df.columns:
             return _df_wide_para_dict(df)
 
-        # Tenta múltiplas abas: cada aba = um produto
         else:
             xls = pd.ExcelFile(filepath)
             resultado = {}
@@ -64,7 +59,6 @@ def carregar_persistencia_excel(filepath: str) -> dict:
 
 
 def _df_para_dict(df: pd.DataFrame) -> dict:
-    """Converte DataFrame flat para dict de persistência."""
     resultado = {}
     for prod, grupo in df.groupby("produto_atuarial"):
         resultado[int(prod)] = dict(zip(
@@ -75,7 +69,6 @@ def _df_para_dict(df: pd.DataFrame) -> dict:
 
 
 def _df_wide_para_dict(df: pd.DataFrame) -> dict:
-    """Converte DataFrame wide (colunas = mês) para dict."""
     resultado = {}
     for _, row in df.iterrows():
         produto = int(row["produto_atuarial"])
@@ -94,10 +87,6 @@ def _df_wide_para_dict(df: pd.DataFrame) -> dict:
 
 def persistencia_padrao(n_meses: int = 24, pct_inicial: float = 1.0,
                          decaimento_mensal: float = 0.02) -> dict:
-    """
-    Gera curva de persistência padrão com decaimento linear.
-    Útil como fallback quando produto não tem curva definida.
-    """
     curva = {}
     for m in range(n_meses + 1):
         val = max(0.0, pct_inicial - m * decaimento_mensal)
@@ -107,19 +96,11 @@ def persistencia_padrao(n_meses: int = 24, pct_inicial: float = 1.0,
     return curva
 
 
-
 # ─────────────────────────────────────────────────────
 # Calcular mês de vida
 # ─────────────────────────────────────────────────────
 
 def calcular_mes_vida(data_inicio_vigencia, data_fim_mes_projetado) -> int:
-    """
-    Mês de vida = datediff(data_inicio_vigencia, data_fim_mes_projetado) em meses completos.
-    Exemplo:
-      ini_vig = 01/jan/2025, fim_mes = 31/jan/2025 → mes_vida = 0 (mesmo mês)
-      ini_vig = 01/jan/2025, fim_mes = 28/fev/2025 → mes_vida = 1
-      ini_vig = 01/jan/2025, fim_mes = 31/jan/2026 → mes_vida = 12
-    """
     if pd.isnull(data_inicio_vigencia) or pd.isnull(data_fim_mes_projetado):
         return 0
     d_ini = pd.Timestamp(data_inicio_vigencia)
@@ -128,15 +109,7 @@ def calcular_mes_vida(data_inicio_vigencia, data_fim_mes_projetado) -> int:
     return max(0, meses)
 
 
-# ─────────────────────────────────────────────────────
-# Fator de persistência mês a mês
-# ─────────────────────────────────────────────────────
-
 def fator_persistencia(curva: dict, mes_vida_atual: int) -> float:
-    """
-    Fator de transição: persistencia[mes+1] / persistencia[mes].
-    Retorna 0.0 se cancelado ou fim da curva.
-    """
     p_atual = curva.get(mes_vida_atual, None)
     p_prox  = curva.get(mes_vida_atual + 1, None)
     if p_atual is None or p_atual <= 0:
@@ -151,10 +124,9 @@ def persistencia_absoluta(curva: dict, mes_vida: int) -> float:
 
 
 # ─────────────────────────────────────────────────────
-# Aplicar persistência acumulada com ticket médio
+# Colunas
 # ─────────────────────────────────────────────────────
 
-# Colunas monetárias que escalam via ticket médio
 COLUNAS_MONETARIAS = [
     "valor_premio_emitido",
     "valor_comissao",
@@ -162,15 +134,17 @@ COLUNAS_MONETARIAS = [
     "sinistros_calculado",
     "gastos_calculado",
     "other_nbi_calculado",
-    "montante_capital",   # Savings: capital reduz conforme clientes saem
+    "montante_capital",
 ]
 
-# Colunas PU-specific: só libera quando PU cancela (PPNG = reserva futura)
 COLUNAS_PPNG = ["ppng_calculado", "valor_ppng"]
 
-# Colunas de prêmio ganho: tratamento especial (proporcional a dias)
 COLUNAS_PREMIO_GANHO = ["premio_ganho_calculado", "valor_premio_ganho_mes"]
 
+
+# ─────────────────────────────────────────────────────
+# Aplicar persistência — versão vetorizada
+# ─────────────────────────────────────────────────────
 
 def aplicar_persistencia_acumulada(
     df_base: pd.DataFrame,
@@ -179,132 +153,225 @@ def aplicar_persistencia_acumulada(
     fallback_curva: dict = None,
 ) -> pd.DataFrame:
     """
-    Aplica persistência com lógica correta de ticket médio e PM vs PU.
+    Aplica persistência de forma vetorizada (muito mais rápida que apply row-by-row).
 
-    Para cada linha:
-      1. Calcula mes_vida = datediff(data_inicio_vigencia, data_fim_mes) em meses
-      2. Busca persistência absoluta para esse mes_vida → fator = P(mes) / P(0)
-      3. Qtd certificados ativos = qtd_original × fator
-      4. Certificados cancelados no mês = qtd × (fator_mes - fator_mes+1)
-      5. Ticket médio de cada coluna = valor / qtd_original
-      6. PM: ajusta TUDO pelo fator (certificados ativos)
-         PU: ajusta prêmio emitido e PPNG pelo fator (libera reserva dos cancelados)
-             prêmio ganho PM: já é mensal, ajusta pelo fator
-             prêmio ganho PU: proporcional aos dias decorridos no mês × certificados ativos
-      7. Prêmio ganho no mês do cancelamento: × (dias_decorridos / dias_no_mes)
-      8. Remove linhas onde persistência == 0
+    Lógica de âncora:
+      - NB    (sem 'mes_vida_stock_base'): fator = P(mes_vida) / P(0)
+      - Stock (com 'mes_vida_stock_base'): fator = P(mes_vida) / P(mes_vida_base)
+        → Porque o Stock já vem com posição "net" (68% = já cancelou 32%).
+          A projeção deve apenas aplicar o DELTA adicional de cancelamento.
+
+    Exemplo Stock:
+      mes_base m=18 com P(18)=68%, m=19 P(19)=66%
+      fator_abs m=18 = 68%/68% = 1.0  (mantém o valor atual)
+      fator_abs m=19 = 66%/68% = 0.97 (perde 2% deste mês em diante)
     """
     df = df_base.copy()
 
+    if df.empty:
+        return df
+
     # Normaliza datas
-    for col in ["data_inicio_vigencia", "data_ini_primeira_vigencia",
-                "data_ini_mes", "data_fim_mes"]:
+    for col in ["data_inicio_vigencia", "data_ini_primeira_vigencia", "data_ini_mes", "data_fim_mes"]:
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], errors="coerce", dayfirst=True)
 
     qtd_col = "quantidade_certificados"
 
-    def processar_linha(row):
-        produto   = int(row.get(produto_col, 0))
-        curva     = curvas.get(produto, fallback_curva or {})
-        tipo_prem = str(row.get("tipo_premio", "PM")).upper()
+    # ── Monta curvas efetivas por produto (com fallback) ──
+    all_prods = df[produto_col].dropna().unique()
+    curvas_efetivas = {}
+    for p in all_prods:
+        try:
+            pk = int(float(p))
+        except (ValueError, TypeError):
+            pk = p
+        c = curvas.get(pk, curvas.get(str(pk), None))
+        if c is None and fallback_curva:
+            c = fallback_curva
+        if c:
+            curvas_efetivas[pk] = c
 
-        # data_ini_primeira_vigencia é a âncora fixa da posição na curva —
-        # não reseta nas renovações. Fallback para data_inicio_vigencia se não existir.
-        d_ini_primeira = row.get("data_ini_primeira_vigencia")
-        d_ini_vig = d_ini_primeira if pd.notna(d_ini_primeira) else row.get("data_inicio_vigencia")
-        d_fim_mes = row.get("data_fim_mes")
-        d_ini_mes = row.get("data_ini_mes")
+    if not curvas_efetivas:
+        return df  # Nenhuma curva → sem cancelamento
 
-        # Sem curva = sem cancelamento
-        if not curva:
-            return row
+    # ── Tabela de lookup: (produto_int, mes_vida) → (p_m, p_m1) ──
+    lookup_rows = []
+    for pk, curva in curvas_efetivas.items():
+        for mv, pm in curva.items():
+            lookup_rows.append({
+                "_pk":     int(pk),
+                "mes_vida": int(mv),
+                "_p_m":    float(pm),
+                "_p_m1":   float(curva.get(mv + 1, 0.0)),
+            })
+    if not lookup_rows:
+        return df
+    df_lookup = pd.DataFrame(lookup_rows)
 
-        mes_vida = calcular_mes_vida(d_ini_vig, d_fim_mes)
+    # ── Tabela de p_base: (produto_int, mes_vida_base) → p_base ──
+    df_lookup_base = df_lookup[["_pk", "mes_vida", "_p_m"]].rename(
+        columns={"mes_vida": "_mvb", "_p_m": "_p_base"}
+    )
 
-        p0   = curva.get(0, 1.0)
-        p_m  = curva.get(mes_vida, 0.0)
-        p_m1 = curva.get(mes_vida + 1, 0.0)
+    # ── Calcula mes_vida para cada linha ──
+    if "data_ini_primeira_vigencia" in df.columns:
+        d_ini = df["data_ini_primeira_vigencia"].fillna(
+            df["data_inicio_vigencia"] if "data_inicio_vigencia" in df.columns else pd.NaT
+        )
+    elif "data_inicio_vigencia" in df.columns:
+        d_ini = df["data_inicio_vigencia"]
+    else:
+        d_ini = pd.Series(pd.NaT, index=df.index)
 
-        if p0 <= 0 or p_m <= 0:
-            # Certificado já cancelado
-            row = row.copy()
-            row[qtd_col] = 0.0
-            for c in COLUNAS_MONETARIAS + COLUNAS_PPNG + COLUNAS_PREMIO_GANHO:
-                if c in row.index:
-                    row[c] = 0.0
-            row["fator_persistencia"] = 0.0
-            row["mes_vida"] = mes_vida
-            return row
+    d_fim = df["data_fim_mes"] if "data_fim_mes" in df.columns else pd.Series(pd.NaT, index=df.index)
 
-        fator_abs    = p_m / p0          # % do volume original ainda ativo
-        fator_prox   = p_m1 / p0 if p_m1 > 0 else 0.0
-        fator_cancel = fator_abs - fator_prox   # % que cancela neste mês
+    mv_series = (
+        (d_fim.dt.year  - d_ini.dt.year)  * 12 +
+        (d_fim.dt.month - d_ini.dt.month)
+    ).clip(lower=0).fillna(0).astype(int)
+    df["mes_vida"] = mv_series
 
-        row = row.copy()
-        qtd_orig = row.get(qtd_col, 1.0)
-        if qtd_orig <= 0:
-            qtd_orig = 1.0
+    # ── Chave inteira do produto ──
+    df["_pk"] = pd.to_numeric(df[produto_col], errors="coerce").fillna(0).astype(int)
 
-        # ── Dias proporcionais para prêmio ganho no mês de cancelamento ──
-        # Se há cancelamento neste mês, o prêmio ganho dos que cancelam é proporcional
-        dias_no_mes  = (d_fim_mes - d_ini_mes).days + 1 if (d_ini_mes and d_fim_mes) else 30
-        dias_decorr  = row.get("duration_decorrido_mes", dias_no_mes)
-        fator_dias   = min(dias_decorr / dias_no_mes, 1.0) if dias_no_mes > 0 else 1.0
+    # ── Merge p_m e p_m1 ──
+    df = df.merge(
+        df_lookup[["_pk", "mes_vida", "_p_m", "_p_m1"]],
+        on=["_pk", "mes_vida"], how="left"
+    )
 
-        # ── Ticket médio ──
-        tickets = {}
-        for c in COLUNAS_MONETARIAS + COLUNAS_PPNG + COLUNAS_PREMIO_GANHO:
-            if c in row.index:
-                tickets[c] = row[c] / qtd_orig
+    # ── p0 por produto (âncora NB = P(0)) ──
+    p0_map = {int(pk): float(c.get(0, 1.0)) for pk, c in curvas_efetivas.items()}
+    df["_p0"] = df["_pk"].map(p0_map)
 
-        # ── Quantidade ativa ──
-        row[qtd_col] = qtd_orig * fator_abs
+    # ── p_anchor: Stock usa P(mes_vida_base), NB usa P(0) ──
+    has_stock_col = ("mes_vida_stock_base" in df.columns and
+                     df["mes_vida_stock_base"].notna().any())
+    if has_stock_col:
+        df["_mvb"] = df["mes_vida_stock_base"].fillna(-1).astype(int)
+        df = df.merge(
+            df_lookup_base[["_pk", "_mvb", "_p_base"]],
+            on=["_pk", "_mvb"], how="left"
+        )
+        is_stock = df["mes_vida_stock_base"].notna()
+        df["_p_anchor"] = np.where(
+            is_stock,
+            df["_p_base"].fillna(1.0),
+            df["_p0"].fillna(1.0)
+        )
+    else:
+        df["_p_anchor"] = df["_p0"].fillna(1.0)
 
-        # ── Colunas monetárias (mesma lógica PM e PU) ──
-        for c in COLUNAS_MONETARIAS:
-            if c in row.index:
-                row[c] = tickets[c] * qtd_orig * fator_abs
+    # ── Fatores ──
+    # tem_curva_produto: o produto tem uma curva configurada (pode não ter entrada para este mes_vida)
+    # has_curva_entry: a entrada (produto, mes_vida) existe no lookup
+    # Distinção importante:
+    #   - produto SEM curva → sem cancelamento (fator = 1.0)
+    #   - produto COM curva mas mes_vida além da curva → cancelado (fator = 0.0)
+    #   - produto COM curva e mes_vida na curva → usa p_m / p_anchor
+    produtos_com_curva = set(curvas_efetivas.keys())
+    tem_curva_produto = df["_pk"].isin(produtos_com_curva).values
+    has_curva_entry   = df["_p_m"].notna().values
 
-        # ── PPNG: só existe em PU ──
-        # PU cancela → libera PPNG dos cancelados (meses futuros)
-        # Certificados que permanecem mantêm sua PPNG normal
-        for c in COLUNAS_PPNG:
-            if c in row.index:
-                if tipo_prem == "PU":
-                    # PPNG dos ativos (que ficam)
-                    row[c] = tickets[c] * qtd_orig * fator_abs
-                else:
-                    row[c] = 0.0  # PM não tem PPNG
+    p_m      = df["_p_m"].fillna(0.0).values
+    p_m1     = df["_p_m1"].fillna(0.0).values
+    p_anchor = df["_p_anchor"].clip(lower=1e-10).values
 
-        # ── Prêmio ganho ──
-        for c in COLUNAS_PREMIO_GANHO:
-            if c in row.index:
-                if tipo_prem == "PM":
-                    # PM: prêmio ganho = emitido × fator (os ativos ganham tudo)
-                    row[c] = tickets[c] * qtd_orig * fator_abs
-                else:
-                    # PU: prêmio ganho = proporcional aos dias
-                    # Certificados ativos ganham normalmente
-                    # Certificados que cancelam ganham só os dias que ficaram
-                    ganho_ativos    = tickets[c] * qtd_orig * fator_prox
-                    ganho_cancelados = tickets[c] * qtd_orig * fator_cancel * fator_dias
-                    row[c] = ganho_ativos + ganho_cancelados
+    # fator_abs:
+    #   produto sem curva       → 1.0
+    #   produto com curva, sem entrada no mes_vida → 0.0 (além da curva = cancelado)
+    #   produto com curva, com entrada → p_m / p_anchor
+    fator_abs = np.where(
+        ~tem_curva_produto,
+        1.0,
+        np.where(
+            has_curva_entry,
+            np.where(p_anchor > 0, p_m / p_anchor, 0.0),
+            0.0
+        )
+    )
+    fator_prox = np.where(
+        ~tem_curva_produto,
+        1.0,
+        np.where(
+            has_curva_entry,
+            np.where(p_anchor > 0, p_m1 / p_anchor, 0.0),
+            0.0
+        )
+    )
+    fator_cancel = np.maximum(fator_abs - fator_prox, 0.0)
+    cancelled    = tem_curva_produto & (fator_abs <= 0)
 
-        row["fator_persistencia"] = fator_abs
-        row["mes_vida"] = mes_vida
-        return row
+    df["fator_persistencia"] = fator_abs
 
-    df = df.apply(processar_linha, axis=1)
+    # ── tipo_premio ──
+    if "tipo_premio" in df.columns:
+        tipo_prem = df["tipo_premio"].fillna("PM").astype(str).str.upper().str.strip()
+    else:
+        tipo_prem = pd.Series("PM", index=df.index)
+    is_pm = (tipo_prem == "PM").values
+    is_pu = (tipo_prem == "PU").values
 
-    # Remove linhas totalmente canceladas
-    if "fator_persistencia" in df.columns:
-        df = df[df["fator_persistencia"] > 0].copy()
-    elif qtd_col in df.columns:
-        df = df[df[qtd_col] > 0].copy()
+    # ── Quantidade original ──
+    if qtd_col in df.columns:
+        qtd_orig = df[qtd_col].copy()
+        qtd_orig = qtd_orig.where(qtd_orig > 0, 1.0)
+    else:
+        qtd_orig = pd.Series(1.0, index=df.index)
+
+    # ── Dias proporcional (para prêmio ganho no mês de cancelamento) ──
+    if "data_ini_mes" in df.columns and "data_fim_mes" in df.columns:
+        dias_no_mes = ((df["data_fim_mes"] - df["data_ini_mes"]).dt.days + 1).clip(lower=1)
+    else:
+        dias_no_mes = pd.Series(30, index=df.index)
+
+    if "duration_decorrido_mes" in df.columns:
+        dias_decorr = pd.to_numeric(df["duration_decorrido_mes"], errors="coerce").fillna(dias_no_mes)
+    else:
+        dias_decorr = dias_no_mes
+
+    fator_dias = (dias_decorr / dias_no_mes).clip(upper=1.0).values
+
+    fa  = np.array(fator_abs)
+    fp  = np.array(fator_prox)
+    fc  = np.array(fator_cancel)
+    qo  = qtd_orig.values
+
+    # ── Colunas monetárias ──
+    for c in COLUNAS_MONETARIAS:
+        if c in df.columns:
+            ticket = df[c].values / qo
+            df[c] = np.where(cancelled, 0.0, ticket * qo * fa)
+
+    # ── PPNG (só PU) ──
+    for c in COLUNAS_PPNG:
+        if c in df.columns:
+            ticket = df[c].values / qo
+            df[c] = np.where(cancelled, 0.0,
+                     np.where(is_pu, ticket * qo * fa, 0.0))
+
+    # ── Prêmio ganho ──
+    for c in COLUNAS_PREMIO_GANHO:
+        if c in df.columns:
+            ticket = df[c].values / qo
+            ganho_pm = ticket * qo * fa
+            ganho_pu = ticket * qo * fp + ticket * qo * fc * fator_dias
+            df[c] = np.where(cancelled, 0.0,
+                     np.where(is_pm, ganho_pm, ganho_pu))
+
+    # ── Quantidade final ──
+    if qtd_col in df.columns:
+        df[qtd_col] = np.where(cancelled, 0.0, qo * fa)
+
+    # ── Remove linhas canceladas ──
+    df = df[df["fator_persistencia"] > 0].copy()
+
+    # ── Limpa colunas temporárias ──
+    tmp = ["_pk", "_p_m", "_p_m1", "_p0", "_p_anchor", "_p_base", "_mvb"]
+    df = df.drop(columns=[c for c in tmp if c in df.columns], errors="ignore")
 
     return df
-
 
 
 # ─────────────────────────────────────────────────────
@@ -313,14 +380,9 @@ def aplicar_persistencia_acumulada(
 
 def gerar_template_persistencia(produtos: list, n_meses: int = 24,
                                   filepath: str = "persistencia_template.xlsx"):
-    """
-    Gera um Excel template de persistência com curvas de exemplo.
-    O usuário preenche os valores reais e faz upload.
-    """
     rows = []
     for prod in produtos:
         for m in range(n_meses + 1):
-            # Curva de exemplo com decaimento suave
             pct = max(0.0, round(1.0 - m * (1.0 / n_meses), 4))
             rows.append({
                 "produto_atuarial": prod,
@@ -332,8 +394,6 @@ def gerar_template_persistencia(produtos: list, n_meses: int = 24,
 
     with pd.ExcelWriter(filepath, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Persistencia")
-
-        # Instrucoes
         pd.DataFrame({
             "Instrucoes": [
                 "Preencha uma linha por produto por mês de vida (0 até o máximo desejado).",

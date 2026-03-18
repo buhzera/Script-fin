@@ -44,6 +44,13 @@ def carregar_new_business(filepath: str) -> pd.DataFrame:
     if "montante_capital" not in df.columns:
         df["montante_capital"] = 0.0
 
+    # Normaliza tipo_premio: strip de espaços; Savings sem tipo → "savings"
+    if "tipo_premio" in df.columns:
+        df["tipo_premio"] = df["tipo_premio"].astype(str).str.strip()
+        mask_sav = df["categoria"] == "Savings"
+        mask_nan = df["tipo_premio"].isin(["nan", "NaN", "", "None"])
+        df.loc[mask_sav & mask_nan, "tipo_premio"] = "savings"
+
     # duration derivado das datas de vigência — Protection only
     df["duration"] = 0
     mask_prot = df["categoria"] != "Savings"

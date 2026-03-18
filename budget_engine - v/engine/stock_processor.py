@@ -13,12 +13,19 @@ Lógica Savings:
   - montante_capital cresce a cada mês com aportes líquidos (aporte - carregamento)
   - Persistência reduz montante_capital e quantidade_certificados
   - premio_ganho_calculado = 0, ppng_calculado = 0
+
+Lógica mes_vida_stock_base (para persistência):
+  - Stock já vem com posição "net" — não é 100% original
+  - mes_vida_stock_base = mês de vida do registro no primeiro mês da projeção
+  - Persistência usa P(mes_vida) / P(mes_vida_stock_base) em vez de P(mes_vida) / P(0)
+  - Isso garante que apenas o DELTA futuro de cancelamento seja aplicado
 """
 import pandas as pd
 import numpy as np
 from datetime import date, timedelta
 from dateutil.relativedelta import relativedelta
 from engine.premio import aplicar_premio
+from engine.persistencia import calcular_mes_vida
 
 
 COLUNAS_STOCK = [
@@ -50,6 +57,14 @@ def carregar_stock(filepath: str) -> pd.DataFrame:
     # Garante coluna montante_capital
     if "montante_capital" not in df.columns:
         df["montante_capital"] = 0.0
+
+    # Normaliza tipo_premio: strip de espaços
+    if "tipo_premio" in df.columns:
+        df["tipo_premio"] = df["tipo_premio"].astype(str).str.strip()
+        # Para Savings sem tipo_premio definido, padroniza para "savings"
+        mask_sav = df["categoria"] == "Savings"
+        mask_nan = df["tipo_premio"].isin(["nan", "NaN", "", "None"])
+        df.loc[mask_sav & mask_nan, "tipo_premio"] = "savings"
 
     # duration derivado das datas de vigência (não vem mais do CSV) — Protection only
     mask_prot = df["categoria"] != "Savings"
@@ -87,6 +102,9 @@ def expandir_stock_mes_a_mes(
     mes_base_ts = pd.Timestamp(mes_base).replace(day=1)
     savings_params = savings_params or {}
 
+    # Fim do primeiro mês de projeção (usado para calcular mes_vida_base do Stock)
+    fim_mes_0 = (mes_base_ts + relativedelta(months=1)) - timedelta(days=1)
+
     for _, row in df.iterrows():
         categoria = str(row.get("categoria", "Protection")).strip()
 
@@ -108,6 +126,9 @@ def expandir_stock_mes_a_mes(
             else:
                 data_ini_vig = pd.Timestamp(data_ini_vig)
 
+            # mes_vida_stock_base para Savings
+            mes_vida_base_sav = calcular_mes_vida(data_ini_vig, fim_mes_0)
+
             for m in range(max_meses_savings):
                 mes_proj = mes_base_ts + relativedelta(months=m)
                 ini_mes  = mes_proj.replace(day=1)
@@ -123,12 +144,13 @@ def expandir_stock_mes_a_mes(
                 novo["movimento"]                  = "Inicial"
                 novo["safra"]                      = safra_orig
                 novo["safra_venda"]                = safra_venda_orig
-                # Sem duration (fundo sem prazo fixo)
-                novo["duration"]              = 0
-                novo["duration_decorrido"]    = 0
-                novo["duration_decorrido_mes"] = 0
+                novo["duration"]                   = 0
+                novo["duration_decorrido"]         = 0
+                novo["duration_decorrido_mes"]     = 0
                 # Capital acumula aportes líquidos mês a mês (antes da persistência)
                 novo["montante_capital"] = capital_inicial + m * net_aporte_por_cert * qtd_inicial
+                # Âncora para persistência: mês de vida no início da projeção
+                novo["mes_vida_stock_base"] = mes_vida_base_sav
 
                 registros.append(novo)
 
@@ -137,26 +159,35 @@ def expandir_stock_mes_a_mes(
             data_fim_vig_orig = row.get("data_fim_vigencia")
             data_ini_vig_orig = row.get("data_inicio_vigencia")
 
-            if pd.isnull(data_fim_vig_orig):
-                continue
-
             produto   = row.get("produto_atuarial", "default")
             horizonte = horizonte_por_produto.get(
                 str(produto), horizonte_por_produto.get("default", 12)
             )
 
-            data_fim_vig_orig = pd.Timestamp(data_fim_vig_orig)
-            cur_ini_vig = (
-                pd.Timestamp(data_ini_vig_orig)
-                if not pd.isnull(data_ini_vig_orig)
-                else mes_base_ts
-            )
-            cur_fim_vig = data_fim_vig_orig
+            # Se data_fim_vigencia estiver nula, calcula a partir do mes_base e horizonte
+            if pd.isnull(data_fim_vig_orig):
+                cur_ini_vig = (
+                    pd.Timestamp(data_ini_vig_orig)
+                    if not pd.isnull(data_ini_vig_orig)
+                    else mes_base_ts
+                )
+                cur_fim_vig = cur_ini_vig + relativedelta(months=horizonte) - timedelta(days=1)
+            else:
+                data_fim_vig_orig = pd.Timestamp(data_fim_vig_orig)
+                cur_ini_vig = (
+                    pd.Timestamp(data_ini_vig_orig)
+                    if not pd.isnull(data_ini_vig_orig)
+                    else mes_base_ts
+                )
+                cur_fim_vig = data_fim_vig_orig
 
             data_ini_primeira_vig = cur_ini_vig
             safra_orig       = row.get("safra")
             safra_venda_orig = row.get("safra_venda")
             is_renovacao = False
+
+            # mes_vida_stock_base: mês de vida deste registro no primeiro mês de projeção
+            mes_vida_base_prot = calcular_mes_vida(data_ini_primeira_vig, fim_mes_0)
 
             for m in range(max_meses_total):
                 mes_proj = mes_base_ts + relativedelta(months=m)
@@ -185,6 +216,8 @@ def expandir_stock_mes_a_mes(
                     (fim_mes - ini_mes).days + 1,
                     (cur_fim_vig - ini_mes).days + 1,
                 ))
+                # Âncora para persistência: mês de vida no início da projeção
+                novo["mes_vida_stock_base"] = mes_vida_base_prot
 
                 registros.append(novo)
 
