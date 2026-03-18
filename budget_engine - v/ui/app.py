@@ -3153,11 +3153,26 @@ with tab5:
             _dups_res = df_res[df_res.duplicated(subset=_chaves_res_presentes, keep=False)]
             if not _dups_res.empty:
                 _n_dup_res = _dups_res.groupby(_chaves_res_presentes).ngroups
-                st.warning(
-                    f"⚠️ **Possível duplicidade detectada no resultado:** {_n_dup_res} combinação(ões) de chaves "
-                    f"aparecem mais de uma vez. Verifique o Data Quality dos inputs — "
-                    f"linhas com mesma chave deveriam ser agrupadas antes de processar."
-                )
+                with st.expander(
+                    f"⚠️ **Possível duplicidade no resultado — {_n_dup_res} combinação(ões) de chaves aparecem mais de uma vez.** "
+                    f"Clique para ver os registros.",
+                    expanded=False
+                ):
+                    st.caption(
+                        "Linhas com mesma combinação de chaves foram encontradas. "
+                        "Se os valores (prêmio, certificados etc.) forem diferentes entre elas, "
+                        "os totais estão sendo somados em duplicidade. "
+                        "Corrija nos inputs agrupando tudo em uma única linha por chave."
+                    )
+                    _cols_exibir = _chaves_res_presentes + [
+                        c for c in ["valor_premio_emitido", "premio_ganho_calculado",
+                                    "quantidade_certificados", "npbt_local"]
+                        if c in _dups_res.columns
+                    ]
+                    st.dataframe(
+                        _dups_res[_cols_exibir].sort_values(_chaves_res_presentes).head(200),
+                        width="stretch", hide_index=True
+                    )
 
         col_f1, col_f2, col_f3 = st.columns(3)
         with col_f1:
