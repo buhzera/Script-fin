@@ -483,11 +483,12 @@ def _get_produtos_carregados() -> set:
 
 
 def _painel_sem_hipotese(hip_df, label: str, fallback_ativo: bool,
-                         colunas_template: list = None, session_key: str = None):
+                         colunas_template: list = None, session_key: str = None,
+                         save_key: str = None):
     """
     Mostra aviso sobre produtos sem hipótese cadastrada.
-    Se colunas_template e session_key forem passados, exibe botão para adicionar
-    a hipótese diretamente, pré-preenchendo produto_atuarial e businessline.
+    session_key : prefixo único para as widget keys (evita DuplicateElementKey)
+    save_key    : chave do session_state onde a linha nova será salva (padrão = session_key)
     """
     produtos_carregados = _get_produtos_carregados()
     if not produtos_carregados:
@@ -503,13 +504,11 @@ def _painel_sem_hipotese(hip_df, label: str, fallback_ativo: bool,
             f"⚠️ **{len(sem_hip)} produto(s) sem hipótese de {label}:** "
             f"`{', '.join(sem_hip)}`{sufixo}"
         )
-        # Botão por produto para adicionar hipótese
         if colunas_template and session_key:
+            _sk = save_key or session_key  # onde salvar no session_state
             with st.expander(f"➕ Adicionar hipótese para produto(s) sem configuração", expanded=False):
                 _prod_sel_add = st.selectbox(
-                    "Produto",
-                    sem_hip,
-                    key=f"_add_hip_prod_{session_key}"
+                    "Produto", sem_hip, key=f"_add_hip_prod_{session_key}"
                 )
                 _bl_add = st.text_input("Business Line", key=f"_add_hip_bl_{session_key}")
                 _nova_linha = {"produto_atuarial": _prod_sel_add, "businessline": _bl_add}
@@ -517,10 +516,12 @@ def _painel_sem_hipotese(hip_df, label: str, fallback_ativo: bool,
                     if _col not in ("produto_atuarial", "businessline"):
                         _nova_linha[_col] = st.text_input(_col, key=f"_add_hip_{session_key}_{_col}")
                 if st.button(f"✅ Adicionar à hipótese de {label}", key=f"_add_hip_btn_{session_key}"):
-                    _df_atual = hip_df if (hip_df is not None and not hip_df.empty) else pd.DataFrame(columns=list(_nova_linha.keys()))
-                    _nova_row = pd.DataFrame([_nova_linha])
-                    st.session_state[session_key] = pd.concat([_df_atual, _nova_row], ignore_index=True)
-                    st.success(f"✅ Produto {_prod_sel_add} adicionado à hipótese de {label}. Salve o CSV para persistir.")
+                    _df_base = st.session_state.get(_sk)
+                    _df_atual = _df_base if (_df_base is not None and not _df_base.empty) \
+                                else pd.DataFrame(columns=list(_nova_linha.keys()))
+                    st.session_state[_sk] = pd.concat(
+                        [_df_atual, pd.DataFrame([_nova_linha])], ignore_index=True)
+                    st.success(f"✅ Produto {_prod_sel_add} adicionado. Salve o CSV para persistir.")
                     st.rerun()
     else:
         st.success(f"✅ Todos os produtos têm hipótese de {label} cadastrada.")
@@ -2365,12 +2366,12 @@ with tab2:
         _painel_sem_hipotese(
             _hip_gastos_only, "gastos", _fb_gas["ativo"],
             colunas_template=["produto_atuarial", "businessline", "tipo_gasto", "tipo_regra", "valor"],
-            session_key="gas_manual"
+            session_key="gas_manual_gastos", save_key="gas_manual"
         )
         _painel_sem_hipotese(
             _hip_othernbi_only, "other NBI", _fb_nbi["ativo"],
             colunas_template=["produto_atuarial", "businessline", "tipo_gasto", "tipo_regra", "valor"],
-            session_key="gas_manual"
+            session_key="gas_manual_othernbi", save_key="gas_manual"
         )
 
     # ── Persistência ───────────────────────────────────
