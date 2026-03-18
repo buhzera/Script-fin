@@ -1918,7 +1918,8 @@ with tabDQ:
 
         # ── Validação de duplicatas em Stock e NB ──────────
         _CHAVES_DQ = ["safra", "produto_atuarial", "businessline", "safra_venda",
-                      "tipo_premio", "data_inicio_vigencia", "data_fim_vigencia"]
+                      "tipo_premio", "data_inicio_vigencia", "data_fim_vigencia",
+                      "safra_projecao"]
         st.markdown("---")
         st.markdown("**🔁 Validação de Duplicatas**")
         st.caption("Registros com mesma combinação de chaves devem ser agrupados em uma única linha para evitar duplicação de valores.")
@@ -3147,7 +3148,8 @@ with tab5:
 
         # ── Alerta de duplicidade no resultado ──
         _CHAVES_RES = ["safra", "produto_atuarial", "businessline", "safra_venda",
-                       "tipo_premio", "data_inicio_vigencia", "data_fim_vigencia", "fonte"]
+                       "tipo_premio", "data_inicio_vigencia", "data_fim_vigencia",
+                       "safra_projecao", "fonte"]
         _chaves_res_presentes = [c for c in _CHAVES_RES if c in df_res.columns]
         if len(_chaves_res_presentes) >= 4:
             _dups_res = df_res[df_res.duplicated(subset=_chaves_res_presentes, keep=False)]
