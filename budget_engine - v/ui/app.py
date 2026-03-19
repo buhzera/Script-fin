@@ -1325,6 +1325,8 @@ with st.sidebar:
         if pasta_sb_tmp:
             st.markdown(f'<div style="font-size:0.72rem;color:#9ECFB5;margin:0.3rem 0;">{pasta_sb_tmp}</div>', unsafe_allow_html=True)
             if st.button("✅ Confirmar", type="primary", width="stretch", key="sidebar_confirmar"):
+                for _bk in ["stock_bytes_loaded", "nb_bytes_loaded"]:
+                    st.session_state.pop(_bk, None)
                 with st.spinner("Carregando..."):
                     res = _carregar_pasta_fonte(pasta_sb_tmp)
                 if "erro" in res:
@@ -1332,17 +1334,33 @@ with st.sidebar:
                 else:
                     st.session_state["pasta_fonte"] = pasta_sb_tmp
                     st.session_state.pop("_pasta_sidebar_tmp", None)
+                    # Persiste nova pasta na sessão salva
+                    _sid_conf = (st.session_state.get("sessao_carregada") or {}).get("id")
+                    if _sid_conf:
+                        atualizar_pasta_sessao(_sid_conf, pasta_sb_tmp)
+                    # Invalida resultados antigos
+                    for _k in ["df_resultado", "df_auditoria", "df_projecao"]:
+                        st.session_state.pop(_k, None)
                     st.success(f"✅ {len(res.get('carregados', []))} arquivo(s)")
                     st.rerun()
 
         # Botão Atualizar — relertura do disco sem mudar a pasta
         if pasta_atual and st.button("🔄 Atualizar Inputs", width="stretch", key="sidebar_atualizar"):
+            # Limpa bytes em cache para garantir releitura completa do disco
+            for _bk in ["stock_bytes_loaded", "nb_bytes_loaded"]:
+                st.session_state.pop(_bk, None)
             with st.spinner("Atualizando..."):
                 res = _carregar_pasta_fonte(pasta_atual)
             if "erro" in res:
                 st.error(res["erro"])
             else:
-                st.success(f"✅ {len(res.get('carregados', []))} arquivo(s) atualizados")
+                # Invalida resultados antigos (inputs mudaram — re-execute para atualizar)
+                for _k in ["df_resultado", "df_auditoria", "df_projecao", "_dq_run",
+                            "filtro_visao_res", "filtro_produto_res", "filtro_bl_res",
+                            "filtro_fonte", "filtro_tipo_premio", "filtro_movimento", "filtro_categoria_res",
+                            "aud_produto", "aud_bl", "aud_fonte", "aud_tipo", "aud_safra", "aud_mov", "aud_categoria"]:
+                    st.session_state.pop(_k, None)
+                st.success(f"✅ {len(res.get('carregados', []))} arquivo(s) recarregados — re-execute para ver os resultados.")
                 st.rerun()
 
     # ── Comparar Exercícios ────────────────────────────
@@ -2768,6 +2786,14 @@ with tab4:
 
     _label_btn = "🔄 Re-executar" if st.session_state["df_resultado"] is not None else "🚀 Executar Cálculo"
     if st.button(_label_btn, type="primary", width="stretch"):
+        # Reseta filtros das abas de Resultado e Auditoria para evitar valores presos
+        for _fk in [
+            "filtro_visao_res", "filtro_produto_res", "filtro_bl_res",
+            "filtro_fonte", "filtro_tipo_premio", "filtro_movimento", "filtro_categoria_res",
+            "aud_produto", "aud_bl", "aud_fonte", "aud_tipo", "aud_safra", "aud_mov", "aud_categoria",
+        ]:
+            st.session_state.pop(_fk, None)
+
         _progresso = st.progress(0, text="Iniciando...")
         log = []
 

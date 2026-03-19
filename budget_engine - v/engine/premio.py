@@ -40,8 +40,34 @@ def calcular_ppng(row: pd.Series) -> float:
 
 
 def aplicar_premio(df: pd.DataFrame) -> pd.DataFrame:
-    """Aplica cálculo de prêmio ganho e PPNG no DataFrame."""
+    """Aplica cálculo de prêmio ganho e PPNG no DataFrame (vetorizado)."""
     df = df.copy()
-    df["premio_ganho_calculado"] = df.apply(calcular_premio_ganho, axis=1)
-    df["ppng_calculado"] = df.apply(calcular_ppng, axis=1)
+
+    cat   = df["categoria"].astype(str)   if "categoria"           in df.columns else pd.Series("Protection",      index=df.index)
+    tipo  = df["tipo_premio"].astype(str) if "tipo_premio"          in df.columns else pd.Series("PM",              index=df.index)
+    prem  = pd.to_numeric(df["valor_premio_emitido"],   errors="coerce").fillna(0.0) if "valor_premio_emitido"   in df.columns else pd.Series(0.0, index=df.index)
+    dur   = pd.to_numeric(df["duration"],               errors="coerce").fillna(0.0) if "duration"               in df.columns else pd.Series(0.0, index=df.index)
+    durm  = pd.to_numeric(df["duration_decorrido_mes"], errors="coerce").fillna(0.0) if "duration_decorrido_mes" in df.columns else pd.Series(0.0, index=df.index)
+    durd  = pd.to_numeric(df["duration_decorrido"],     errors="coerce").fillna(0.0) if "duration_decorrido"     in df.columns else pd.Series(0.0, index=df.index)
+
+    is_sav = (cat == "Savings").values
+    is_pm  = (tipo == "PM").values
+    is_pu  = (tipo == "PU").values
+    has_d  = (dur > 0).values
+
+    pv  = prem.values
+    dv  = np.where(has_d, dur.values, 1.0)   # evita divisão por zero
+    dmv = durm.values
+    ddv = durd.values
+
+    pg = np.where(is_sav, 0.0,
+         np.where(is_pm,         pv,
+         np.where(is_pu & has_d, (dmv / dv) * pv, 0.0)))
+
+    dur_rest = np.where(has_d, dur.values - ddv, 0.0)
+    ppng = np.where(is_sav, 0.0,
+           np.where(is_pu & has_d, (dur_rest / dv) * pv, 0.0))
+
+    df["premio_ganho_calculado"] = pg
+    df["ppng_calculado"]         = ppng
     return df

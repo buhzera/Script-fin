@@ -157,14 +157,15 @@ def aplicar_persistencia_acumulada(
 
     Lógica de âncora:
       - NB    (sem 'mes_vida_stock_base'): fator = P(mes_vida) / P(0)
-      - Stock (com 'mes_vida_stock_base'): fator = P(mes_vida) / P(mes_vida_base)
+      - Stock (com 'mes_vida_stock_base'): fator = P(mes_vida) / P(mes_vida_base - 1)
         → Porque o Stock já vem com posição "net" (68% = já cancelou 32%).
-          A projeção deve apenas aplicar o DELTA adicional de cancelamento.
+          A âncora é o mês ANTERIOR ao ponto de partida, para aplicar o cancelamento
+          incremental já no primeiro mês de projeção.
 
     Exemplo Stock:
-      mes_base m=18 com P(18)=68%, m=19 P(19)=66%
-      fator_abs m=18 = 68%/68% = 1.0  (mantém o valor atual)
-      fator_abs m=19 = 66%/68% = 0.97 (perde 2% deste mês em diante)
+      cert com mes_vida_base=21, P(20)=70%, P(21)=68%
+      fator_abs m=21 = 68%/70% = 0.971 (perde ~2% no primeiro mês)
+      fator_abs m=22 = P(22)/70% (delta acumulado desde o mês 20)
     """
     df = df_base.copy()
 
@@ -249,7 +250,14 @@ def aplicar_persistencia_acumulada(
     has_stock_col = ("mes_vida_stock_base" in df.columns and
                      df["mes_vida_stock_base"].notna().any())
     if has_stock_col:
-        df["_mvb"] = df["mes_vida_stock_base"].fillna(-1).astype(int)
+        # Âncora = P(mes_vida_base - 1): aplica cancelamento incremental desde o 1º mês
+        # Para NB (sem mes_vida_stock_base): usa -1 como sentinela → sem match → fallback p0
+        _is_stock_row = df["mes_vida_stock_base"].notna()
+        df["_mvb"] = np.where(
+            _is_stock_row,
+            (df["mes_vida_stock_base"].fillna(0).astype(int) - 1).clip(lower=0),
+            -1
+        ).astype(int)
         df = df.merge(
             df_lookup_base[["_pk", "_mvb", "_p_base"]],
             on=["_pk", "_mvb"], how="left"
